@@ -16,7 +16,6 @@ func (r *IEQRating) Setup(n string, w float64) {
 // AddIndex implements interface Rateable.AddIndex
 // Adds an IEQ index and its score value for subsequent rating in SetRating().
 func (r *IEQRating) AddIndex(n string, v float64) error {
-	//r.rating.indices = append(r.rating.indices, Index{name: n, score: v})
 	return r.rating.AddIndex(n, v)
 }
 
@@ -28,9 +27,7 @@ func (r *IEQRating) Indices() []Index {
 // SetRating implements interface Rateable.SetRating
 // Computes the overall IEQ Rating score.
 func (r *IEQRating) SetRating() {
-	len := float64(len(r.rating.indices))
-	//fmt.Printf("index=%s len=%g\n", r.name, len)
-	if len == 0.0 {
+	if len(r.rating.indices) == 0 {
 		return
 	}
 
@@ -38,7 +35,6 @@ func (r *IEQRating) SetRating() {
 	for _, i := range r.rating.indices {
 		sum += i.score
 	}
-	//fmt.Printf("index=%s sum=%g\n", r.name, sum)
 	if sum == 0.0 {
 		return
 	}

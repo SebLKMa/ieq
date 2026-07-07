@@ -34,7 +34,7 @@ task:
   minutes: 5
 # Vendor
 vendor:
-  Name: awair-device
+  Name: awair
   DeviceDisplayID: awair-omni_18453
   DeviceID: 18453
   Org: 3332

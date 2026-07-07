@@ -12,30 +12,9 @@ type StandardFormula struct {
 
 // Setup implements interface Scorer.Setup()
 // Setup will populate the scores ranges used by Score().
-func (f *StandardFormula) Setup(n string, min float64, max float64) {
-	f.formula = &Formula{}
+func (f *StandardFormula) Setup(n string, minVal float64, maxVal float64) {
 	f.name = n
-	f.formula.min = min
-	f.formula.max = max
-	f.formula.avg = (f.formula.min + f.formula.max) / 2
-	f.formula.rrange = (f.formula.max - f.formula.avg) / f.formula.avg * 100
-
-	// generate the relative ranges as a binary skiptree
-	from := 0.0
-	to := f.formula.rrange
-	high := 100
-	low := -10
-	chunks := 11
-	diff := (high - low) / chunks
-	score := high
-	for i := 1; i < chunks; i++ {
-		//fmt.Printf("From:%g To:%g Score:%g\n", from, to, float64(score))
-		f.formula.ranges.Insert(from, to, float64(score))
-		score = score - diff
-		from = to
-		to += f.formula.rrange
-	}
-	f.formula.ranges.Insert(from, to, float64(score))
+	f.formula = newFormula(minVal, maxVal)
 }
 
 // Score implements interface Scorer.Score()

@@ -19,13 +19,19 @@ func TestStandardRating(t *testing.T) {
 	noiseRating.Setup("Noise", 25)
 
 	// all scores 100 percent
-	thermalRating.AddIndex("Temperature", 50)
-	thermalRating.AddIndex("Humidity", 50)
-	iaqRating.AddIndex("CO2", 30)
-	iaqRating.AddIndex("VOC", 30)
-	iaqRating.AddIndex("PM25", 40)
-	lightingRating.AddIndex("Lighting", 100)
-	noiseRating.AddIndex("Noise", 100)
+	mustAdd := func(r *Rating, n string, v float64) {
+		t.Helper()
+		if err := r.AddIndex(n, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustAdd(&thermalRating, "Temperature", 50)
+	mustAdd(&thermalRating, "Humidity", 50)
+	mustAdd(&iaqRating, "CO2", 30)
+	mustAdd(&iaqRating, "VOC", 30)
+	mustAdd(&iaqRating, "PM25", 40)
+	mustAdd(&lightingRating, "Lighting", 100)
+	mustAdd(&noiseRating, "Noise", 100)
 
 	thermalRating.SetRating()
 	iaqRating.SetRating()
@@ -52,43 +58,40 @@ func TestStandardRating(t *testing.T) {
 	t.Logf("%s Rating: %g\n", ieqRating.Name(), ieqRating.Rate())
 }
 
-func TestRatingsSetupError(t *testing.T) {
-	// Test existing list of indices already adds up to 100 percent
-
-	// components weightings set to all 25
+// Regression test: each index score is a percentage in [0, 100], so several
+// perfect scores in one component must all be accepted. The previous
+// validation wrongly rejected an index when the scores summed past 100,
+// silently dropping e.g. Humidity when Temperature already scored 100.
+func TestAddIndexAcceptsMultiplePerfectScores(t *testing.T) {
 	thermalRating := Rating{}
 	thermalRating.Setup("Thermal", 25)
 
-	iaqRating := Rating{}
-	iaqRating.Setup("IAQ", 25)
-
-	lightingRating := Rating{}
-	lightingRating.Setup("Lighting", 25)
-
-	noiseRating := Rating{}
-	noiseRating.Setup("Noise", 25)
-
-	// all scores 100 percent
-	err := thermalRating.AddIndex("Temperature", 50)
-	if err != nil {
-		t.Error(err.Error())
+	if err := thermalRating.AddIndex("Temperature", 100); err != nil {
+		t.Fatalf("unexpected error adding Temperature: %v", err)
 	}
-	err = thermalRating.AddIndex("Humidity", 50)
-	if err != nil {
-		t.Error(err.Error())
-	}
-	err = iaqRating.AddIndex("CO2", 30)
-	if err != nil {
-		t.Error(err.Error())
-	}
-	err = iaqRating.AddIndex("VOC", 30)
-	if err != nil {
-		t.Error(err.Error())
-	}
-	err = iaqRating.AddIndex("PM25", 50)
-	if err == nil {
-		t.Error("Expecting AddIndex error 30 + 30 + 50 exceeds 100")
+	if err := thermalRating.AddIndex("Humidity", 100); err != nil {
+		t.Fatalf("unexpected error adding Humidity: %v", err)
 	}
 
-	t.Logf("OK we expect error: %s \n", err.Error())
+	thermalRating.SetRating()
+
+	// average of (100, 100) weighted at 25 percent
+	if got := thermalRating.Rate(); got != 25 {
+		t.Errorf("Thermal rating = %g, want 25", got)
+	}
+}
+
+func TestAddIndexRejectsOutOfRangeScore(t *testing.T) {
+	r := Rating{}
+	r.Setup("IAQ", 25)
+
+	if err := r.AddIndex("CO2", 101); err == nil {
+		t.Error("expected error for score above 100")
+	}
+	if err := r.AddIndex("CO2", -1); err == nil {
+		t.Error("expected error for negative score")
+	}
+	if err := r.AddIndex("CO2", 100); err != nil {
+		t.Errorf("unexpected error for boundary score 100: %v", err)
+	}
 }

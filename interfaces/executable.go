@@ -1,6 +1,9 @@
 package interfaces
 
-// Executable represents an executable task
+import "context"
+
+// Executable represents an executable task.
+// Execute runs until the task completes or the context is cancelled.
 type Executable interface {
-	Execute() error
+	Execute(ctx context.Context) error
 }

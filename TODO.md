@@ -4,6 +4,20 @@ Findings from a review of the codebase ahead of the Go 1.22.5 upgrade, ordered b
 priority. Items in section 1 are hard blockers: the code will not build on Go 1.22
 until they are done.
 
+> **Status (2026-07-07): implemented.** All items are done except the optional
+> `log/slog` migration (logging was standardized on `log` for now). Notes on the
+> completed work:
+>
+> - Dependencies were upgraded in place; the optional `lib/pq` → `pgx` migration
+>   was not taken.
+> - `LightingFormula` gained a `NewLightingFormula(scale)` constructor; the
+>   struct stays exported for compatibility and `SetScale` is marked deprecated.
+> - The exposed uHoo credential was removed from the code, but it lives on in
+>   git history — **the credential still needs to be rotated by the owner.**
+> - The DB scan-error fix has no unit test (it needs a live postgres); the other
+>   section 3 fixes are covered by tests, and the sensor HTTP paths are now
+>   tested against `httptest` fakes.
+
 ## 1. Build blockers for Go 1.22
 
 **Purpose:** Make the repository compile at all under the Go 1.22.5 toolchain.
@@ -15,25 +29,25 @@ Go 1.16, and Go 1.22 removed `go get` support in legacy GOPATH mode, so dependen
 management for this layout is dead. Everything else in this document assumes these
 items are done first — nothing can be built, vetted or tested repo-wide until then.
 
-- [ ] **Consolidate into a single Go module.** Go 1.22 removed GOPATH mode, and most
+- [x] **Consolidate into a single Go module.** Go 1.22 removed GOPATH mode, and most
   packages (`configs`, `formulas`, `frontend`, `scoreserver`, `sensors`, `tasks`,
   `utils`) have no `go.mod` — they only ever built in GOPATH mode. Create one root
   `go.mod` (`module github.com/seblkma/ieq`, `go 1.22`) and delete the per-package
   modules in `interfaces/`, `models/`, `ratings/` and `db/postgres/` along with their
   `replace` directives. Keep `gqlgen-ieq/` as its own module only if it must stay
   independently versioned; otherwise fold it in too.
-- [ ] **Regenerate gqlgen code.** `gqlgen-ieq/server.go` and
+- [x] **Regenerate gqlgen code.** `gqlgen-ieq/server.go` and
   `graph/schema.resolvers.go` import `gqlgen-ieq/graph/generated`, but no `generated`
   package is committed — the module cannot compile until `go generate ./...` is run.
   Commit the generated code (or document the generate step in CI).
-- [ ] **Upgrade dependencies.** All pinned versions are from ~2020:
+- [x] **Upgrade dependencies.** All pinned versions are from ~2020:
   - `github.com/99designs/gqlgen` v0.13.0 → current release (breaking API changes
     expected; regenerate after upgrading).
   - `github.com/lib/pq` v1.9.0 → current, or migrate to `jackc/pgx` (lib/pq is in
     maintenance mode).
   - `gopkg.in/yaml.v3` → latest patch (older versions have known CVEs).
   - Run `go mod tidy` after consolidation.
-- [ ] **Replace `github.com/christophwitzko/go-curl`** (`sensors/awair/awairdevice.go`).
+- [x] **Replace `github.com/christophwitzko/go-curl`** (`sensors/awair/awairdevice.go`).
   The library is unmaintained, has an unidiomatic API (`err` as first return value),
   and everything it does is a plain GET with headers — use `net/http` directly, as
   `sensors/uhoo` already does.
@@ -49,11 +63,11 @@ newer Go releases (`any`, `log/slog`), and take advantage of Go 1.22's routing
 improvements in `net/http` that eliminate hand-rolled request plumbing. Doing them
 during the upgrade keeps the codebase from accumulating two styles side by side.
 
-- [ ] `sensors/uhoo/uhoodevice.go`: replace `io/ioutil.ReadAll` with `io.ReadAll`
+- [x] `sensors/uhoo/uhoodevice.go`: replace `io/ioutil.ReadAll` with `io.ReadAll`
   (`io/ioutil` is deprecated since Go 1.16).
-- [ ] Replace `interface{}` with `any` throughout (`utils/size.go`, both sensor
+- [x] Replace `interface{}` with `any` throughout (`utils/size.go`, both sensor
   packages).
-- [ ] `frontend/main.go`: use Go 1.22's enhanced `net/http.ServeMux` patterns
+- [x] `frontend/main.go`: use Go 1.22's enhanced `net/http.ServeMux` patterns
   (`mux.HandleFunc("GET /ieq/device", ...)`) instead of bare `http.HandleFunc`,
   which also removes the need for manual method handling.
 - [ ] Consider `log/slog` (Go 1.21) to replace the current mix of `log.Printf`,
@@ -72,35 +86,35 @@ a nil error (wrong variable returned after `Scan`), and scoring failures are
 recorded as a legitimate 0. Each fix should land with a regression test (see
 section 7), because none of them are caught by the existing test suite.
 
-- [ ] **`db/postgres/ieqdb.go` and `device.go`: Scan errors are swallowed.** Every
+- [x] **`db/postgres/ieqdb.go` and `device.go`: Scan errors are swallowed.** Every
   `Read*` function does `if err2 != nil { return data, err }` — returning the (nil)
   `err` from `Query` instead of `err2` from `Scan`, so a scan failure returns zero
   data with a nil error. Return `err2` (and check `rows.Err()` after the loop).
-- [ ] **`ratings/standard.go` `AddIndex` validation is wrong and its errors are
+- [x] **`ratings/standard.go` `AddIndex` validation is wrong and its errors are
   ignored.** It rejects an index when the *sum of scores* exceeds 100, but each
   metric score legitimately ranges up to 100 (Thermal = Temperature + Humidity can
   sum to 200). With good readings, the second index is silently rejected — and every
   `AddIndex` call in `tasks/scoreexecute.go` and `ratings/ieq.go` discards the error,
   so the rating is then computed from a partial index list. Fix the validation
   (weightings should sum to 100, not scores) and check the returned errors.
-- [ ] **`ratings/compute.go` `ComputeScore` hides failures.** When `Score` returns
+- [x] **`ratings/compute.go` `ComputeScore` hides failures.** When `Score` returns
   `ok == false` it prints "Unable to compute score :(" and returns 0 — callers then
   store 0 as a legitimate score. Return an error (or the `ok` flag) to the caller.
-- [ ] **`formulas/lighting.go` `Setup`:** the first range is inserted twice (once
+- [x] **`formulas/lighting.go` `Setup`:** the first range is inserted twice (once
   before the loop, again on the first loop iteration), creating a duplicate node in
   the tree.
-- [ ] **`tasks/scoreexecute.go` duration arithmetic is obscure:**
+- [x] **`tasks/scoreexecute.go` duration arithmetic is obscure:**
   `time.Duration(minutes * 60000)` later multiplied by `time.Millisecond` happens to
   work but reads as a bug. Use `time.Duration(minutes) * time.Minute` once.
-- [ ] **`frontend/main.go`:** error responses are written with `fmt.Fprintf` and
+- [x] **`frontend/main.go`:** error responses are written with `fmt.Fprintf` and
   status 200, leaking internal error strings (including DB errors) to clients. Use
   `http.Error` with proper status codes and log the details server-side.
-- [ ] **`frontend/main.go` `main`:** the `http.ListenAndServe` error is discarded —
+- [x] **`frontend/main.go` `main`:** the `http.ListenAndServe` error is discarded —
   wrap in `log.Fatal(...)` so bind failures are visible.
-- [ ] **`sensors/uhoo/uhoodevice.go`:** HTTP status codes are never checked in
+- [x] **`sensors/uhoo/uhoodevice.go`:** HTTP status codes are never checked in
   `GetState`/`GetRawMetrics`; a 401/500 body gets passed to `json.Unmarshal` and
   produces a confusing downstream error.
-- [ ] **`utils/utils.go` `FileExists`:** if `os.Stat` fails with an error other than
+- [x] **`utils/utils.go` `FileExists`:** if `os.Stat` fails with an error other than
   not-exist (e.g. permission denied), `info` is nil and `info.IsDir()` panics.
 
 ## 4. Security / secret hygiene
@@ -115,18 +129,18 @@ alone is not enough — exposed credentials must also be rotated. The remaining 
 (parameterized `LIMIT`, `url.Values` encoding) are defence-in-depth: not exploitable
 today, but they close off classes of bugs rather than instances.
 
-- [ ] **Remove real credentials from comments** in `sensors/uhoo/uhoodevice.go`
+- [x] **Remove real credentials from comments** in `sensors/uhoo/uhoodevice.go`
   (lines ~25 and ~55): commented-out request bodies contain an actual username and
   password hash. Delete the comments and rotate the uHoo credential — it is in git
   history.
-- [ ] **`db/postgres/connect.go`:** hardcoded host/user/password/dbname (already
+- [x] **`db/postgres/connect.go`:** hardcoded host/user/password/dbname (already
   flagged by the in-code TODO and README). Read from environment variables or config.
-- [ ] **`db/postgres/ieqdb.go` `ReadMetrics`:** the `LIMIT` clause is built by string
+- [x] **`db/postgres/ieqdb.go` `ReadMetrics`:** the `LIMIT` clause is built by string
   concatenation (`strconv.Itoa(count)`). It's an `int` so not injectable today, but
   make it a `$2` query parameter for consistency.
-- [ ] **`sensors/uhoo`:** credentials are form-encoded by string concatenation; use
+- [x] **`sensors/uhoo`:** credentials are form-encoded by string concatenation; use
   `url.Values.Encode()` so special characters in tokens don't corrupt the request.
-- [ ] Device tokens live in the scoreserver YAML files; keep placeholder-only files
+- [x] Device tokens live in the scoreserver YAML files; keep placeholder-only files
   in git and load real tokens from the environment.
 
 ## 5. Architecture and design cleanups
@@ -143,39 +157,39 @@ call carries a timeout or `context.Context`, so one hung vendor API stalls a
 scoring loop indefinitely. These items restructure without changing observable
 behaviour (except the awair vendor-name mismatch fix, which is also a bug).
 
-- [ ] **Use the `interfaces.Device` abstraction in `tasks/scoreexecute.go`.** The
+- [x] **Use the `interfaces.Device` abstraction in `tasks/scoreexecute.go`.** The
   `awair` and `uhoo` switch cases are ~25 identical lines each; both sensor types
   already satisfy `interfaces.Device`. Construct the right `Device` from
   `Cfg.VENDOR.Name` once, then run one shared code path. (Note: the config uses
   `Name: awair-device` in `configawair.yaml` but the switch matches `"awair"` — the
   awair task currently matches nothing; verify and fix while refactoring.)
-- [ ] **`db/postgres`: stop opening a new connection pool per call.** Every function
+- [x] **`db/postgres`: stop opening a new connection pool per call.** Every function
   does `connect()` + `defer db.Close()`; `sql.DB` is a pool designed to be created
   once and shared. Create it at startup, `Ping` to validate, and pass it (or a small
   repository struct) to callers. Remove the `panic` in `connect`.
-- [ ] **Add `context.Context`** to the DB layer (`QueryContext`/`ExecContext`) and
+- [x] **Add `context.Context`** to the DB layer (`QueryContext`/`ExecContext`) and
   sensor HTTP calls (`http.NewRequestWithContext`), and use a shared `http.Client`
   with a timeout — `http.DefaultClient` has none, so a hung vendor API hangs the
   scoring loop forever.
-- [ ] **`db/postgres`: replace `SELECT *` with explicit column lists.** Positional
+- [x] **`db/postgres`: replace `SELECT *` with explicit column lists.** Positional
   `Scan` against `SELECT *` breaks silently if the table gains or reorders columns.
   Also the three `ReadLatest*` functions and `ReadMetrics` are near-duplicates —
   factor the row-scan loop.
-- [ ] **`formulas/mingood.go` `Setup` duplicates `standard.go` `Setup` verbatim** —
+- [x] **`formulas/mingood.go` `Setup` duplicates `standard.go` `Setup` verbatim** —
   delegate to the embedded `StandardFormula.Setup` instead.
-- [ ] **`tasks/scoreexecute.go`:** replace the 1-second busy-poll waiting for a
+- [x] **`tasks/scoreexecute.go`:** replace the 1-second busy-poll waiting for a
   5-minute boundary with a single computed `time.Sleep` (or `time.Ticker`), and use
   a `time.Ticker` for the main loop. Add graceful shutdown (signal handling +
   context cancellation) to both `scoreserver` and `frontend`.
-- [ ] **`frontend/main.go`:** embed templates with `//go:embed gotemplates/...`
+- [x] **`frontend/main.go`:** embed templates with `//go:embed gotemplates/...`
   instead of 25 hardcoded `../gotemplates/...` relative paths that break unless the
   binary runs from `frontend/`. Cache the `time.LoadLocation("Asia/Singapore")`
   result at startup instead of per request (and consider making the zone
   configurable).
-- [ ] **`frontend/main.go` `getDeviceIDFromURL`:** drop the unused
+- [x] **`frontend/main.go` `getDeviceIDFromURL`:** drop the unused
   `http.ResponseWriter` parameter and the re-parse of `r.URL.String()` —
   `r.URL.Query().Get("device_id")` is sufficient.
-- [ ] **Sensor JSON decoding:** replace the `map[string]interface{}` + type-switch
+- [x] **Sensor JSON decoding:** replace the `map[string]interface{}` + type-switch
   ladders in `awair.GetDeviceInfo` and both uhoo functions with typed structs and
   plain `json.Unmarshal`, as `awairmetrics.go` already does. Shorter, faster, and
   type-checked at compile time.
@@ -193,25 +207,25 @@ deletes code (slice reversal, sorted-slice search), removes an ordering trap
 (`SetScale` before `Setup`), or eliminates shadowing of names that are now
 builtins.
 
-- [ ] `utils/skiptree`: inserts arrive in ascending key order, so the BST degenerates
+- [x] `utils/skiptree`: inserts arrive in ascending key order, so the BST degenerates
   into a linked list (O(n) search) — the README itself notes balance matters. For
   these small, build-once/read-many range tables, a sorted slice +
   `sort.Search`/`slices.BinarySearchFunc` is simpler and faster; alternatively make
   the tree self-balancing. Generics (Go 1.18+) could replace the float64-only API if
   reuse is intended.
-- [ ] `frontend/main.go`: replace the index-arithmetic reversal loop (whose loop
+- [x] `frontend/main.go`: replace the index-arithmetic reversal loop (whose loop
   variable `m` is otherwise unused) with `slices.Reverse` (Go 1.21).
-- [ ] `ratings/standard.go`, `ratings/ieq.go`: rename the local variable `len` — it
+- [x] `ratings/standard.go`, `ratings/ieq.go`: rename the local variable `len` — it
   shadows the builtin. Likewise `min`/`max` locals in `formulas` and `tasks` now
   shadow the Go 1.21 builtins; legal, but worth renaming during the upgrade.
-- [ ] Error strings: `errors.New("No record found")`, `"Awair data is empty"`, etc.
+- [x] Error strings: `errors.New("No record found")`, `"Awair data is empty"`, etc.
   violate ST1005 (capitalized); lowercase them and prefer `fmt.Errorf` with `%w` for
   wrapping. Consider a sentinel `ErrNoRecord` so callers can distinguish "no data
   yet" from real failures instead of string-matching.
-- [ ] `utils/size.go` `SizeOfPublicStruct` and `utils/utils.go` flag helpers appear
+- [x] `utils/size.go` `SizeOfPublicStruct` and `utils/utils.go` flag helpers appear
   unused — confirm and delete dead code (also the commented-out debug `fmt.Printf`
   blocks scattered through `formulas`, `ratings`, `sensors`, `frontend`).
-- [ ] `formulas/lighting.go`: implement the existing in-code TODO — unexport the
+- [x] `formulas/lighting.go`: implement the existing in-code TODO — unexport the
   struct and provide a constructor requiring the scale, removing the fragile
   "SetScale must be called before Setup" ordering contract.
 
@@ -227,11 +241,11 @@ caught several section 2 and 6 items mechanically, and calls out the untested
 packages (`db`, `sensors`, `tasks`) whose bugs in section 3 slipped through
 precisely because nothing exercises them.
 
-- [ ] After the module consolidation, get `go build ./...`, `go vet ./...` and
+- [x] After the module consolidation, get `go build ./...`, `go vet ./...` and
   `go test ./...` passing at the repo root — today tests can only run per-directory.
-- [ ] Add `gofmt`/`govet` plus `staticcheck` or `golangci-lint` to catch the
+- [x] Add `gofmt`/`govet` plus `staticcheck` or `golangci-lint` to catch the
   deprecation and shadowing issues above mechanically.
-- [ ] Existing tests cover only `formulas`, `ratings` and `skiptree`. The bug fixes
+- [x] Existing tests cover only `formulas`, `ratings` and `skiptree`. The bug fixes
   in section 3 (AddIndex validation, DB scan errors, lighting duplicate insert)
   should each land with a regression test; `db` and `sensors` currently have no
   tests at all (consider `httptest` fakes for the vendor APIs).

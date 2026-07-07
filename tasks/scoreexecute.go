@@ -1,115 +1,126 @@
 package tasks
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
 	db "github.com/seblkma/ieq/db/postgres"
+	intf "github.com/seblkma/ieq/interfaces"
 	mdl "github.com/seblkma/ieq/models"
 	rate "github.com/seblkma/ieq/ratings"
 	awair "github.com/seblkma/ieq/sensors/awair"
 	uhoo "github.com/seblkma/ieq/sensors/uhoo"
 )
 
-// Execute Implements interface Executable.Execute()
-// This function executes an endless loop to get device, metrics, compute and
-// store the scores at configured interval.
-// Therefore it must be invoked using goroutine.
-func (task *ScoringTask) Execute() error {
+// newDevice constructs the vendor device named in the config.
+func (task *ScoringTask) newDevice() (intf.Device, error) {
+	switch task.Cfg.VENDOR.Name {
+	case "awair":
+		return &awair.SensorInfo{Token: task.Cfg.VENDOR.Token, Org: task.Cfg.VENDOR.Org}, nil
+	case "uhoo":
+		return &uhoo.SensorInfo{Token: task.Cfg.VENDOR.Token, Org: task.Cfg.VENDOR.Org}, nil
+	}
+	return nil, fmt.Errorf("unknown vendor name %q in config", task.Cfg.VENDOR.Name)
+}
+
+// Execute implements interface Executable.Execute()
+// It reads the device metrics, computes and stores the scores at the
+// configured interval until ctx is cancelled. Scoring starts at the next
+// 5 minute boundary of the hour, e.g. :05, :10, :15...
+func (task *ScoringTask) Execute(ctx context.Context) error {
 	if !task.Initialized {
-		return errors.New("ScoringTask not properly initialized")
+		return errors.New("scoring task not properly initialized")
 	}
 
-	minutes := task.Cfg.TASK.Minutes
-	duration := time.Duration(minutes * 60000)
-	timenow := time.Now()
+	device, err := task.newDevice()
+	if err != nil {
+		return err
+	}
 
-	// delay until the 5 minutes of the hour
 	displayID := task.Cfg.VENDOR.DeviceDisplayID
-	for {
-		timenow = time.Now()
-		_, minutes, _ := timenow.Clock()
-		if minutes%5 == 0 { // only start task at 5 minute multiples of the hour
-			break // lets do it
-		}
-		log.Printf("Waiting to start %s task...%s\n", displayID, timenow.Format("02/01/2006 15:04:05"))
-		time.Sleep(1 * time.Second)
+	interval := time.Duration(task.Cfg.TASK.Minutes) * time.Minute
+
+	// wait until the next 5 minute boundary of the hour
+	next := time.Now().Truncate(5 * time.Minute).Add(5 * time.Minute)
+	log.Printf("Waiting until %s to start %s task...", next.Format("02/01/2006 15:04:05"), displayID)
+	select {
+	case <-time.After(time.Until(next)):
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
-	// this is the endless loop to get device, metrics, compute and store the scores
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		timenow = time.Now()
-
-		switch task.Cfg.VENDOR.Name {
-		case "awair":
-			sensor := awair.SensorInfo{}
-			vendorDevID := task.Cfg.VENDOR.DeviceID
-			sensor.Token = task.Cfg.VENDOR.Token
-			sensor.Org = task.Cfg.VENDOR.Org
-			devInfo, err := sensor.GetDeviceInfo(vendorDevID)
-			log.Printf("Executing for %s at %s\n", devInfo.DeviceID, timenow.Format("2006/01/02 15:04:05"))
-			if err != nil {
-				log.Println(err)
-				break
-			}
-			// write device error status to db
-			err = db.CreateDeviceStatus(devInfo)
-			if err != nil {
-				log.Println(err)
-				break
-			}
-			metrics, err := sensor.GetLatestMetrics(vendorDevID)
-			if err != nil || metrics.Empty {
-				log.Println(err)
-				break
-			}
-			task.scoreThem(devInfo, metrics)
-		case "uhoo":
-			sensor := uhoo.SensorInfo{}
-			vendorDevID := task.Cfg.VENDOR.DeviceID
-			sensor.Token = task.Cfg.VENDOR.Token
-			sensor.Org = task.Cfg.VENDOR.Org
-			devInfo, err := sensor.GetDeviceInfo(vendorDevID)
-			log.Printf("Executing for %s at %s\n", devInfo.DeviceID, timenow.Format("2006/01/02 15:04:05"))
-			if err != nil {
-				log.Println(err)
-				break
-			}
-			// write device error status to db
-			err = db.CreateDeviceStatus(devInfo)
-			if err != nil {
-				log.Println(err)
-				break
-			}
-			metrics, err := sensor.GetLatestMetrics(vendorDevID)
-			if err != nil || metrics.Empty {
-				log.Println(err)
-				break
-			}
-			task.scoreThem(devInfo, metrics)
+		task.runOnce(ctx, device)
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			log.Printf("Stopping %s task: %v", displayID, ctx.Err())
+			return ctx.Err()
 		}
-
-		// pause
-		//time.Sleep(60000 * time.Millisecond) // 1 minute
-		time.Sleep(duration * time.Millisecond)
 	}
 }
 
-// computes the metrics scores and store them in database for the device.
-func (task *ScoringTask) scoreThem(devInfo mdl.DeviceInfo, metrics mdl.Metrics) {
+// runOnce performs a single fetch-score-store cycle for the device.
+// Failures are logged and skipped; the next tick retries.
+func (task *ScoringTask) runOnce(ctx context.Context, device intf.Device) {
+	vendorDevID := task.Cfg.VENDOR.DeviceID
 
-	// write device error status to db
-	err := db.CreateDeviceStatus(devInfo)
-	if err != nil {
-		log.Println(err.Error())
+	devInfo, infoErr := device.GetDeviceInfo(ctx, vendorDevID)
+	log.Printf("Executing for %s at %s", devInfo.DeviceID, time.Now().Format("2006/01/02 15:04:05"))
+
+	// record the device status, including error status
+	if err := db.CreateDeviceStatus(ctx, devInfo); err != nil {
+		log.Println(err)
 		return
 	}
-
-	// no need to continue if device status is 0
+	if infoErr != nil {
+		log.Println(infoErr)
+		return
+	}
+	// no need to continue if device is not connected
 	if devInfo.Status == 0 {
 		return
 	}
+
+	metrics, err := device.GetLatestMetrics(ctx, vendorDevID)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if metrics.Empty {
+		log.Printf("%s returned no metrics", devInfo.DeviceID)
+		return
+	}
+
+	task.scoreThem(ctx, devInfo, metrics)
+}
+
+// addScore computes the score for one metric value, records it on the rating
+// and stores the raw value and score in the destination records.
+// Failures are logged; the metric is then left out of the rating instead of
+// polluting it with a fake zero score.
+func addScore(r *rate.Rating, sc intf.Scorer, name string, value float64, rawDest, scoreDest *float64) {
+	score, err := rate.ComputeScore(sc, value)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if err := r.AddIndex(name, score); err != nil {
+		log.Println(err)
+		return
+	}
+	log.Printf("%s: %g   Score: %g", name, value, score)
+	*rawDest = value
+	*scoreDest = score
+}
+
+// computes the metrics scores and store them in database for the device.
+func (task *ScoringTask) scoreThem(ctx context.Context, devInfo mdl.DeviceInfo, metrics mdl.Metrics) {
 
 	// set up the weightings
 	thermalRating := rate.Rating{}
@@ -125,60 +136,37 @@ func (task *ScoringTask) scoreThem(devInfo mdl.DeviceInfo, metrics mdl.Metrics) 
 	noiseRating.Setup("Noise", task.Cfg.WEIGHTINGS.Noise)
 
 	// start computing the metrics scores for the device
-	dbmetrics := mdl.Metrics{}
-	dbmetrics.DeviceID = devInfo.DeviceID
-	dbmetricscore := mdl.MetricScore{}
-	dbmetricscore.DeviceID = devInfo.DeviceID
-	dbieqscore := mdl.IeqScore{}
-	dbieqscore.DeviceID = devInfo.DeviceID
+	dbmetrics := mdl.Metrics{DeviceID: devInfo.DeviceID}
+	dbmetricscore := mdl.MetricScore{DeviceID: devInfo.DeviceID}
+	dbieqscore := mdl.IeqScore{DeviceID: devInfo.DeviceID}
 
-	score := rate.ComputeScore(task.TemperatureFormula, metrics.Temperature)
-	thermalRating.AddIndex("Temperature", score)
-	dbmetrics.Temperature = metrics.Temperature
-	dbmetricscore.Temperature = score
-
-	score = rate.ComputeScore(task.HumidityFormula, metrics.Humidity)
-	thermalRating.AddIndex("Humidity", score)
-	dbmetrics.Humidity = metrics.Humidity
-	dbmetricscore.Humidity = score
-
-	score = rate.ComputeScore(task.Co2Formula, metrics.CO2)
-	iaqRating.AddIndex("CO2", score)
-	dbmetrics.CO2 = metrics.CO2
-	dbmetricscore.CO2 = score
-
-	score = rate.ComputeScore(task.VocFormula, metrics.VOC)
-	iaqRating.AddIndex("VOC", score)
-	dbmetrics.VOC = metrics.VOC
-	dbmetricscore.VOC = score
-
-	score = rate.ComputeScore(task.Pm25Formula, metrics.PM25)
-	iaqRating.AddIndex("PM25", score)
-	dbmetrics.PM25 = metrics.PM25
-	dbmetricscore.PM25 = score
+	addScore(&thermalRating, task.TemperatureFormula, "Temperature", metrics.Temperature,
+		&dbmetrics.Temperature, &dbmetricscore.Temperature)
+	addScore(&thermalRating, task.HumidityFormula, "Humidity", metrics.Humidity,
+		&dbmetrics.Humidity, &dbmetricscore.Humidity)
+	addScore(&iaqRating, task.Co2Formula, "CO2", metrics.CO2,
+		&dbmetrics.CO2, &dbmetricscore.CO2)
+	addScore(&iaqRating, task.VocFormula, "VOC", metrics.VOC,
+		&dbmetrics.VOC, &dbmetricscore.VOC)
+	addScore(&iaqRating, task.Pm25Formula, "PM25", metrics.PM25,
+		&dbmetrics.PM25, &dbmetricscore.PM25)
 	// include lighting score if required
 	if lightingRating.Weighting() > 0 {
-		score = rate.ComputeScore(task.LightingFormula, metrics.Lighting)
-		lightingRating.AddIndex("Lighting", score)
-		dbmetrics.Lighting = metrics.Lighting
-		dbmetricscore.Lighting = score
+		addScore(&lightingRating, task.LightingFormula, "Lighting", metrics.Lighting,
+			&dbmetrics.Lighting, &dbmetricscore.Lighting)
 	}
-	// including noise score if required
+	// include noise score if required
 	if noiseRating.Weighting() > 0 {
-		score = rate.ComputeScore(task.NoiseFormula, metrics.Noise)
-		noiseRating.AddIndex("Noise", score)
-		dbmetrics.Noise = metrics.Noise
-		dbmetricscore.Noise = score
+		addScore(&noiseRating, task.NoiseFormula, "Noise", metrics.Noise,
+			&dbmetrics.Noise, &dbmetricscore.Noise)
 	}
 
 	// compute ratings for IEQ components
 	thermalRating.SetRating()
 	iaqRating.SetRating()
-	// compute lighting rating if required
 	if lightingRating.Weighting() > 0 {
 		lightingRating.SetRating()
 	}
-	// compute noise rating if required
 	if noiseRating.Weighting() > 0 {
 		noiseRating.SetRating()
 	}
@@ -186,15 +174,17 @@ func (task *ScoringTask) scoreThem(devInfo mdl.DeviceInfo, metrics mdl.Metrics) 
 	// compute IEQ overall rating
 	ieqRating := rate.IEQRating{}
 	ieqRating.Setup("Overall IEQ", 1.0)
-	ieqRating.AddIndex(thermalRating.Name(), thermalRating.Rate())
-	ieqRating.AddIndex(iaqRating.Name(), iaqRating.Rate())
-	// include lighting rating if required
+	components := []*rate.Rating{&thermalRating, &iaqRating}
 	if lightingRating.Weighting() > 0 {
-		ieqRating.AddIndex(lightingRating.Name(), lightingRating.Rate())
+		components = append(components, &lightingRating)
 	}
-	// include noise rating if required
 	if noiseRating.Weighting() > 0 {
-		ieqRating.AddIndex(noiseRating.Name(), noiseRating.Rate())
+		components = append(components, &noiseRating)
+	}
+	for _, c := range components {
+		if err := ieqRating.AddIndex(c.Name(), c.Rate()); err != nil {
+			log.Println(err)
+		}
 	}
 	ieqRating.SetRating()
 
@@ -217,21 +207,16 @@ func (task *ScoringTask) scoreThem(devInfo mdl.DeviceInfo, metrics mdl.Metrics) 
 	for _, i := range ieqRating.Indices() {
 		log.Printf("%v ", i)
 	}
-	log.Println()
-	log.Printf("%s Rating: %g\n", ieqRating.Name(), ieqRating.Rate())
+	log.Printf("%s Rating: %g", ieqRating.Name(), ieqRating.Rate())
 
 	// commit to database
-	err = db.CreateMetric(dbmetrics)
-	if err != nil {
-		log.Println(err.Error())
+	if err := db.CreateMetric(ctx, dbmetrics); err != nil {
+		log.Println(err)
 	}
-	err = db.CreateMetricScore(dbmetricscore)
-	if err != nil {
-		log.Println(err.Error())
+	if err := db.CreateMetricScore(ctx, dbmetricscore); err != nil {
+		log.Println(err)
 	}
-	err = db.CreateIeqScore(dbieqscore)
-	if err != nil {
-		log.Println(err.Error())
+	if err := db.CreateIeqScore(ctx, dbieqscore); err != nil {
+		log.Println(err)
 	}
-
 }

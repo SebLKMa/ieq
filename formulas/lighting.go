@@ -4,53 +4,55 @@ import (
 	"fmt"
 )
 
-// LightingFormula defines a type to contain the lighting formula and implement Score interface
+// LightingFormula defines a type to contain the lighting formula and implement Score interface.
+// Use NewLightingFormula to construct it with the required scale.
 type LightingFormula struct {
 	name    string
 	formula *Formula
 	scale   float64
 }
 
+// NewLightingFormula returns a LightingFormula with the given scale.
+// A scale <= 0 falls back to the default of 1.
+func NewLightingFormula(scale float64) *LightingFormula {
+	f := &LightingFormula{}
+	f.SetScale(scale)
+	return f
+}
+
 // SetScale sets the scale for Setup to generate ranges.
 // SetScale has to be called before Setup.
 // If not called, the default scale is set to 1.
+//
+// Deprecated: use NewLightingFormula, which removes the call-order requirement.
 func (f *LightingFormula) SetScale(sc float64) {
 	f.scale = sc
 }
 
 // Setup implements interface Scorer.Setup()
 // Setup will populate the scores ranges used by Score().
-// Please note that SetScale has to be called before Setup.
 // If scale is not set, the default scale is set to 1.
-func (f *LightingFormula) Setup(n string, min float64, max float64) {
-	// TODO - make this formula unexported, export a constructor with required input for scale.
+func (f *LightingFormula) Setup(n string, minVal float64, maxVal float64) {
 	if f.scale <= 0 {
 		f.scale = 1
 	}
-	f.formula = &Formula{}
 	f.name = n
-	f.formula.min = min
-	f.formula.max = max
+	f.formula = &Formula{min: minVal, max: maxVal}
 	f.formula.avg = (f.formula.min + f.formula.max) / 2
 	f.formula.rrange = (f.formula.max - f.formula.avg) / f.formula.avg * 100
 
-	// generate the relative ranges as a binary skiptree
-	//scale := 1.5
-	incrementalfrom := f.formula.avg // 500.0
+	// generate lux ranges outward from the average: each step scales the
+	// bounds up (incremental) and down (decremental) and lowers the score
+	incrementalfrom := f.formula.avg
 	incrementalto := incrementalfrom * f.scale
-	decrementalfrom := f.formula.avg // 500.0
+	decrementalfrom := f.formula.avg
 	decrementalto := decrementalfrom / f.scale
-	high := 100.0
 	chunks := 10
 	diff := 12.5 // interval
-	score := high
-	//fmt.Printf("From:%g To:%g Score:%g\n", incrementalfrom, incrementalfrom, float64(score))
-	f.formula.ranges.Insert(incrementalfrom, incrementalto, float64(score))
+	score := 100.0
 	for i := 1; i < chunks; i++ {
-
-		//fmt.Printf("From:%g To:%g Score:%g From:%g To:%g\n", incrementalfrom, incrementalto, float64(score), decrementalfrom, decrementalto)
-		f.formula.ranges.Insert(incrementalfrom, incrementalto, float64(score)) // from - to
-		f.formula.ranges.Insert(decrementalto, decrementalfrom, float64(score)) // to - from
+		f.formula.ranges.Insert(incrementalfrom, incrementalto, score) // from - to
+		f.formula.ranges.Insert(decrementalto, decrementalfrom, score) // to - from
 		score = score - diff
 		incrementalfrom = incrementalto
 		incrementalto *= f.scale
@@ -64,7 +66,6 @@ func (f *LightingFormula) Score(v float64) (result float64, ok bool) {
 
 	result, ok = f.formula.ranges.Search(v)
 	if !ok {
-		//fmt.Printf("Lighting result:%g\n", result)
 		// score is 0 when lux value is out of ranges
 		return result, true
 	}

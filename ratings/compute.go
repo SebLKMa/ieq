@@ -7,20 +7,19 @@ import (
 )
 
 // Setup sets up the concrete scorer
-func Setup(sc intf.Scorer, name string, min float64, max float64) {
-	sc.Setup(name, min, max)
+func Setup(sc intf.Scorer, name string, minVal float64, maxVal float64) {
+	sc.Setup(name, minVal, maxVal)
 }
 
-// ComputeScore uses the provided concrete Scorer and measured value to compute its soore
-func ComputeScore(sc intf.Scorer, value float64) (score float64) {
-	//fmt.Println(tempeFormula.String())
+// ComputeScore uses the provided concrete Scorer and measured value to compute its score.
+// It returns an error when the Scorer cannot compute a score for the value, so
+// callers can distinguish a failure from a legitimate zero score.
+func ComputeScore(sc intf.Scorer, value float64) (float64, error) {
 	score, ok := sc.Score(value)
-	if ok {
-		fmt.Printf("%s: %g   Score: %g\n", sc.Name(), value, score)
-	} else {
-		fmt.Println("Unable to compute score :(")
+	if !ok {
+		return 0, fmt.Errorf("%s: unable to compute score for value %g", sc.Name(), value)
 	}
-	return
+	return score, nil
 }
 
 // PrintInfo is helper function to print description of a Stringer

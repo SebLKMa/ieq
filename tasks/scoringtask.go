@@ -1,9 +1,9 @@
 package tasks
 
 import (
-	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	conf "github.com/seblkma/ieq/configs"
 	fml "github.com/seblkma/ieq/formulas"
@@ -27,6 +27,8 @@ type ScoringTask struct {
 
 // NewScoringTask constructs a new ScoreTask instance
 // ScoreTask properties will be initialized from configuration (file or database).
+// The vendor token can be supplied via the environment as <VENDOR>_TOKEN
+// (e.g. AWAIR_TOKEN, UHOO_TOKEN) so no secret needs to live in the yaml file.
 func NewScoringTask(configFile string) *ScoringTask {
 	if !util.FileExists(configFile) {
 		log.Fatalf("%s file not found in current directory.", configFile)
@@ -36,7 +38,6 @@ func NewScoringTask(configFile string) *ScoringTask {
 	if err != nil {
 		log.Fatal(err)
 	}
-	//defer f.Close() // not deferring, close immediately after decode
 	decoder := yaml.NewDecoder(f)
 
 	task := ScoringTask{Initialized: false}
@@ -46,7 +47,13 @@ func NewScoringTask(configFile string) *ScoringTask {
 		log.Fatal("Failed to decode config yaml file. ", err)
 	}
 	f.Close()
-	fmt.Printf("Config:\n%v\n", task.Cfg)
+
+	if token := os.Getenv(strings.ToUpper(task.Cfg.VENDOR.Name) + "_TOKEN"); token != "" {
+		task.Cfg.VENDOR.Token = token
+	}
+	// do not log the config itself: it carries the vendor token
+	log.Printf("Loaded config %s for device %s (vendor %s, scheme %s)",
+		configFile, task.Cfg.VENDOR.DeviceDisplayID, task.Cfg.VENDOR.Name, task.Cfg.WEIGHTINGS.Scheme)
 
 	task.TemperatureFormula = &fml.StandardFormula{}
 	task.HumidityFormula = &fml.StandardFormula{}
@@ -54,42 +61,27 @@ func NewScoringTask(configFile string) *ScoringTask {
 	task.VocFormula = &fml.MinIsGoodFormula{}
 	task.Pm25Formula = &fml.MinIsGoodFormula{}
 	task.NoiseFormula = &fml.MinIsGoodFormula{}
-	task.LightingFormula = &fml.LightingFormula{}
+	task.LightingFormula = fml.NewLightingFormula(task.Cfg.LIGHTING.Scale)
 
-	min := task.Cfg.Temperature.Min
-	max := task.Cfg.Temperature.Max
-	rate.Setup(task.TemperatureFormula, "Temperature", min, max)
+	rate.Setup(task.TemperatureFormula, "Temperature", task.Cfg.Temperature.Min, task.Cfg.Temperature.Max)
 	rate.PrintInfo(task.TemperatureFormula)
 
-	min = task.Cfg.Humidity.Min
-	max = task.Cfg.Humidity.Max
-	rate.Setup(task.HumidityFormula, "Humidity", min, max)
+	rate.Setup(task.HumidityFormula, "Humidity", task.Cfg.Humidity.Min, task.Cfg.Humidity.Max)
 	rate.PrintInfo(task.HumidityFormula)
 
-	min = task.Cfg.CO2.Min
-	max = task.Cfg.CO2.Max
-	rate.Setup(task.Co2Formula, "CO2", min, max)
+	rate.Setup(task.Co2Formula, "CO2", task.Cfg.CO2.Min, task.Cfg.CO2.Max)
 	rate.PrintInfo(task.Co2Formula)
 
-	min = task.Cfg.VOC.Min
-	max = task.Cfg.VOC.Max
-	rate.Setup(task.VocFormula, "VOC", min, max)
+	rate.Setup(task.VocFormula, "VOC", task.Cfg.VOC.Min, task.Cfg.VOC.Max)
 	rate.PrintInfo(task.VocFormula)
 
-	min = task.Cfg.PM25.Min
-	max = task.Cfg.PM25.Max
-	rate.Setup(task.Pm25Formula, "PM25", min, max)
+	rate.Setup(task.Pm25Formula, "PM25", task.Cfg.PM25.Min, task.Cfg.PM25.Max)
 	rate.PrintInfo(task.Pm25Formula)
 
-	min = task.Cfg.NOISE.Min
-	max = task.Cfg.NOISE.Max
-	rate.Setup(task.NoiseFormula, "Noise", min, max)
+	rate.Setup(task.NoiseFormula, "Noise", task.Cfg.NOISE.Min, task.Cfg.NOISE.Max)
 	rate.PrintInfo(task.NoiseFormula)
 
-	min = task.Cfg.LIGHTING.Min
-	max = task.Cfg.LIGHTING.Max
-	task.LightingFormula.SetScale(task.Cfg.LIGHTING.Scale) // Scale must be set first
-	rate.Setup(task.LightingFormula, "Lighting", min, max)
+	rate.Setup(task.LightingFormula, "Lighting", task.Cfg.LIGHTING.Min, task.Cfg.LIGHTING.Max)
 	rate.PrintInfo(task.LightingFormula)
 
 	task.Initialized = true

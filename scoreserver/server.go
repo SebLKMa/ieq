@@ -1,41 +1,33 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os/signal"
 	"sync"
+	"syscall"
 
 	tasks "github.com/seblkma/ieq/tasks"
 )
 
-func doAwairScores() {
-	defer wg.Done()
-	task := tasks.NewScoringTask("configawair.yaml")
-	task.Execute()
-}
-
-func doUhooScores() {
-	defer wg.Done()
-	task := tasks.NewScoringTask("configuhoo.yaml")
-	task.Execute()
-}
-
-// for keeping main() running
-var wg = &sync.WaitGroup{}
-
-// You must build and run as binary, pkill or control-c to quit
+// Build and run as a binary; Ctrl-C or SIGTERM stops the tasks gracefully.
 // go build -o server server.go
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// Never run Empty loop in main, empty loop uses 100% of a CPU Core
-	// https://stackoverflow.com/questions/39902477/whats-the-best-practices-to-run-a-background-task-along-with-server-listening
-	// https://stackoverflow.com/questions/39493692/difference-between-the-main-goroutine-and-spawned-goroutines-of-a-go-program
+	var wg sync.WaitGroup
+	for _, configFile := range []string{"configawair.yaml", "configuhoo.yaml"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			task := tasks.NewScoringTask(configFile)
+			log.Printf("%s task started", configFile)
+			if err := task.Execute(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("%s task stopped: %v", configFile, err)
+			}
+		}()
+	}
 
-	wg.Add(1)
-	go doAwairScores()
-	log.Println("awair task started")
-	wg.Add(1)
-	go doUhooScores()
-	log.Println("uhoo task started")
-
-	wg.Wait() // blocks until all tasks are completed or our pid is killed
+	wg.Wait() // blocks until all tasks stop (signal received)
 }

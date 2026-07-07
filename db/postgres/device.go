@@ -1,61 +1,47 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
-	_ "github.com/lib/pq" // the db driver supports database/sql
 	mdl "github.com/seblkma/ieq/models"
 )
 
 // CreateDeviceStatus creates new record in database
-func CreateDeviceStatus(data mdl.DeviceInfo) error {
-	db := connect()
-	defer db.Close()
+func CreateDeviceStatus(ctx context.Context, data mdl.DeviceInfo) error {
+	db, err := getDB()
+	if err != nil {
+		return err
+	}
 
-	stmt, err := db.Prepare("INSERT INTO devicestatus(device_id, created_on, status, status_desc) VALUES($1, $2, $3, $4)")
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO devicestatus(device_id, created_on, status, status_desc) VALUES($1, $2, $3, $4)",
+		data.DeviceID, time.Now(), data.Status, data.StatusDescription)
 	if err != nil {
-		return err
+		return fmt.Errorf("create device status: %w", err)
 	}
-	_, err = stmt.Exec(data.DeviceID, time.Now(), data.Status, data.StatusDescription)
-	if err != nil {
-		return err
-	}
-	fmt.Println("device status created in database")
 	return nil
 }
 
 // ReadLastDeviceStatus returns the last record
-func ReadLastDeviceStatus(deviceID string) (data mdl.DeviceInfo, err error) {
-	//data = DeviceStatus{}
-	db := connect()
-	defer db.Close()
-
-	stmt := "SELECT * FROM devicestatus WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
-
-	rows, err := db.Query(stmt, deviceID)
+func ReadLastDeviceStatus(ctx context.Context, deviceID string) (mdl.DeviceInfo, error) {
+	data := mdl.DeviceInfo{}
+	db, err := getDB()
 	if err != nil {
 		return data, err
 	}
-	defer rows.Close()
 
-	var rowid int
-	var results []mdl.DeviceInfo
-	for rows.Next() {
-		item := mdl.DeviceInfo{}
-		err2 := rows.Scan(&rowid, &item.DeviceID, &item.CreatedOn, &item.Status, &item.StatusDescription)
-		if err2 != nil {
-			return data, err
-		}
-		results = append(results, item)
+	stmt := "SELECT device_id, created_on, status, status_desc FROM devicestatus WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
+	row := db.QueryRowContext(ctx, stmt, deviceID)
+	err = row.Scan(&data.DeviceID, &data.CreatedOn, &data.Status, &data.StatusDescription)
+	if errors.Is(err, sql.ErrNoRows) {
+		return data, fmt.Errorf("devicestatus for device %s: %w", deviceID, ErrNoRecord)
 	}
-
-	if len(results) == 0 {
-		return data, errors.New("No record found")
+	if err != nil {
+		return data, fmt.Errorf("scan devicestatus: %w", err)
 	}
-
-	// just the latest record
-	data = results[0]
 	return data, nil
 }

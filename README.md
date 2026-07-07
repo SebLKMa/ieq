@@ -45,7 +45,9 @@ metrics | an append-only table that stores the metrics read by device. In **prod
 metricscores | an append-only table that stores the scores calculated by our application. In **production**, these should be stored in **time-series database**.  
 ieqscores | an append-only table that stores the scores calculated by our application. In **production**, these should be stored in **time-series database**.  
 
-For now, `db/postgres/connect.go` contains hardcoded database user and database name.  
+Connection settings are read from the environment (`IEQ_DB_HOST`, `IEQ_DB_PORT`,
+`IEQ_DB_USER`, `IEQ_DB_PASSWORD`, `IEQ_DB_NAME`), falling back to local
+development defaults (see `db/postgres/connect.go`).  
 Run `db/postgres/setup.sh` to create the db tables.  
 
 ## formulas
@@ -77,8 +79,9 @@ Contains the html, css, js for rendering IEQ Rating and Scores in [Chart.js](htt
 
 ## gqlgen-ieq
 A sample GraphQL server follows the steps from [gqlgen getting started](https://gqlgen.com/getting-started/). 
-You may have to do a fresh `go mod init` in your own directory.   
-Then re-generate GraphQL codes:  
+It is its own Go module (the rest of the repository is the single module
+`github.com/seblkma/ieq`, requiring Go 1.22+).  
+To re-generate the GraphQL code after changing the schema:  
 ```sh
 $ go generate ./...
 ```
@@ -228,6 +231,8 @@ Also, the Overall Rating is computed based on Weightings associated to Thermal, 
 ## scoreserver
 This package provides the a sample backend server process to periodically read metrics from device, computes can stores the scores in database.  
 The tasks intervals are currently stored in each device yaml config file. In production, device config would be stored in the database.  
+Vendor API tokens should not be committed in the yaml files; supply them via the
+environment as `<VENDOR>_TOKEN` (e.g. `AWAIR_TOKEN`, `UHOO_TOKEN`).  
 Build the server.go and run as a single binary.  
 ```sh
 go build -o server server.go

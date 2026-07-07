@@ -1,22 +1,33 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
-	_ "github.com/lib/pq" // the db driver supports database/sql
 	mdl "github.com/seblkma/ieq/models"
 )
 
-// CreateMetric creates metrics record in database
-func CreateMetric(data mdl.Metrics) error {
-	db := connect()
-	defer db.Close()
+// ErrNoRecord is returned when a query matches no rows, so callers can
+// distinguish "no data yet" from a real failure.
+var ErrNoRecord = errors.New("no record found")
 
-	sqlstmt := "INSERT INTO metrics(device_id, created_on, temperature, humidity, co2, voc, pm25, lighting, noise) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-	_, err := db.Exec(sqlstmt,
+const (
+	metricsColumns  = "device_id, created_on, temperature, humidity, co2, voc, pm25, lighting, noise"
+	ieqScoreColumns = "device_id, created_on, scheme, thermal, iaq, lighting, noise, overall, thermal_weighting, iaq_weighting, lighting_weighting, noise_weighting"
+)
+
+// CreateMetric creates metrics record in database
+func CreateMetric(ctx context.Context, data mdl.Metrics) error {
+	db, err := getDB()
+	if err != nil {
+		return err
+	}
+
+	sqlstmt := "INSERT INTO metrics(" + metricsColumns + ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+	_, err = db.ExecContext(ctx, sqlstmt,
 		data.DeviceID,
 		time.Now(),
 		data.Temperature,
@@ -26,22 +37,21 @@ func CreateMetric(data mdl.Metrics) error {
 		data.PM25,
 		data.Lighting,
 		data.Noise)
-
 	if err != nil {
-		return err
+		return fmt.Errorf("create metrics: %w", err)
 	}
-
-	fmt.Println("metrics created in database")
 	return nil
 }
 
 // CreateMetricScore creates metricscores record in database
-func CreateMetricScore(data mdl.MetricScore) error {
-	db := connect()
-	defer db.Close()
+func CreateMetricScore(ctx context.Context, data mdl.MetricScore) error {
+	db, err := getDB()
+	if err != nil {
+		return err
+	}
 
-	sqlstmt := "INSERT INTO metricscores(device_id, created_on, temperature, humidity, co2, voc, pm25, lighting, noise) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-	_, err := db.Exec(sqlstmt,
+	sqlstmt := "INSERT INTO metricscores(" + metricsColumns + ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+	_, err = db.ExecContext(ctx, sqlstmt,
 		data.DeviceID,
 		time.Now(),
 		data.Temperature,
@@ -51,22 +61,21 @@ func CreateMetricScore(data mdl.MetricScore) error {
 		data.PM25,
 		data.Lighting,
 		data.Noise)
-
 	if err != nil {
-		return err
+		return fmt.Errorf("create metricscores: %w", err)
 	}
-
-	fmt.Println("metricscores created in database")
 	return nil
 }
 
 // CreateIeqScore creates ieqscores record in database
-func CreateIeqScore(data mdl.IeqScore) error {
-	db := connect()
-	defer db.Close()
+func CreateIeqScore(ctx context.Context, data mdl.IeqScore) error {
+	db, err := getDB()
+	if err != nil {
+		return err
+	}
 
-	sqlstmt := "INSERT INTO ieqscores(device_id, created_on, scheme, thermal, iaq, lighting, noise, overall, thermal_weighting, iaq_weighting, lighting_weighting, noise_weighting) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
-	_, err := db.Exec(sqlstmt,
+	sqlstmt := "INSERT INTO ieqscores(" + ieqScoreColumns + ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+	_, err = db.ExecContext(ctx, sqlstmt,
 		data.DeviceID,
 		time.Now(),
 		data.Scheme,
@@ -79,143 +88,103 @@ func CreateIeqScore(data mdl.IeqScore) error {
 		data.IAQWeighting,
 		data.LightingWeighting,
 		data.NoiseWeighting)
-
 	if err != nil {
-		return err
+		return fmt.Errorf("create ieqscores: %w", err)
 	}
+	return nil
+}
 
-	fmt.Println("ieqscores created in database")
+// scanMetrics scans one metrics/metricscores row into the destination fields.
+func scanMetricsRow(row interface{ Scan(dest ...any) error }, deviceID, table string, dest ...any) error {
+	err := row.Scan(dest...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%s for device %s: %w", table, deviceID, ErrNoRecord)
+	}
+	if err != nil {
+		return fmt.Errorf("scan %s: %w", table, err)
+	}
 	return nil
 }
 
 // ReadLatestMetrics returns the latest metrics record
-func ReadLatestMetrics(deviceID string) (data mdl.Metrics, err error) {
-	data = mdl.Metrics{}
-	db := connect()
-	defer db.Close()
-
-	stmt := "SELECT * FROM metrics WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
-
-	rows, err := db.Query(stmt, deviceID)
+func ReadLatestMetrics(ctx context.Context, deviceID string) (mdl.Metrics, error) {
+	data := mdl.Metrics{}
+	db, err := getDB()
 	if err != nil {
 		return data, err
 	}
-	defer rows.Close()
 
-	var rowid int
-	var results []mdl.Metrics
-	for rows.Next() {
-		item := mdl.Metrics{}
-		err2 := rows.Scan(&rowid, &item.DeviceID, &item.CreatedOn, &item.Temperature, &item.Humidity, &item.CO2, &item.VOC, &item.PM25, &item.Lighting, &item.Noise)
-		if err2 != nil {
-			return data, err
-		}
-		results = append(results, item)
-	}
-
-	if len(results) == 0 {
-		return data, errors.New("No record found")
-	}
-
-	// just the latest record
-	data = results[0]
-	return data, nil
+	stmt := "SELECT " + metricsColumns + " FROM metrics WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
+	row := db.QueryRowContext(ctx, stmt, deviceID)
+	err = scanMetricsRow(row, deviceID, "metrics",
+		&data.DeviceID, &data.CreatedOn, &data.Temperature, &data.Humidity,
+		&data.CO2, &data.VOC, &data.PM25, &data.Lighting, &data.Noise)
+	return data, err
 }
 
 // ReadLatestMetricScores returns the latest metricscores record
-func ReadLatestMetricScores(deviceID string) (data mdl.MetricScore, err error) {
-	data = mdl.MetricScore{}
-	db := connect()
-	defer db.Close()
-
-	stmt := "SELECT * FROM metricscores WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
-
-	rows, err := db.Query(stmt, deviceID)
+func ReadLatestMetricScores(ctx context.Context, deviceID string) (mdl.MetricScore, error) {
+	data := mdl.MetricScore{}
+	db, err := getDB()
 	if err != nil {
 		return data, err
 	}
-	defer rows.Close()
 
-	var rowid int
-	var results []mdl.MetricScore
-	for rows.Next() {
-		item := mdl.MetricScore{}
-		err2 := rows.Scan(&rowid, &item.DeviceID, &item.CreatedOn, &item.Temperature, &item.Humidity, &item.CO2, &item.VOC, &item.PM25, &item.Lighting, &item.Noise)
-		if err2 != nil {
-			return data, err
-		}
-		results = append(results, item)
-	}
-
-	if len(results) == 0 {
-		return data, errors.New("No record found")
-	}
-
-	// just the latest record
-	data = results[0]
-	return data, nil
+	stmt := "SELECT " + metricsColumns + " FROM metricscores WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
+	row := db.QueryRowContext(ctx, stmt, deviceID)
+	err = scanMetricsRow(row, deviceID, "metricscores",
+		&data.DeviceID, &data.CreatedOn, &data.Temperature, &data.Humidity,
+		&data.CO2, &data.VOC, &data.PM25, &data.Lighting, &data.Noise)
+	return data, err
 }
 
 // ReadLatestIeqScores returns the latest ieqscores record
-func ReadLatestIeqScores(deviceID string) (data mdl.IeqScore, err error) {
-	data = mdl.IeqScore{}
-	db := connect()
-	defer db.Close()
-
-	stmt := "SELECT * FROM ieqscores WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
-
-	rows, err := db.Query(stmt, deviceID)
+func ReadLatestIeqScores(ctx context.Context, deviceID string) (mdl.IeqScore, error) {
+	data := mdl.IeqScore{}
+	db, err := getDB()
 	if err != nil {
 		return data, err
 	}
-	defer rows.Close()
 
-	var rowid int
-	var results []mdl.IeqScore
-	for rows.Next() {
-		item := mdl.IeqScore{}
-		err2 := rows.Scan(&rowid, &item.DeviceID, &item.CreatedOn, &item.Scheme, &item.Thermal, &item.IAQ, &item.Lighting, &item.Noise, &item.Overall, &item.ThermalWeighting, &item.IAQWeighting, &item.LightingWeighting, &item.NoiseWeighting)
-		if err2 != nil {
-			return data, err
-		}
-		results = append(results, item)
-	}
-
-	if len(results) == 0 {
-		return data, errors.New("No record found")
-	}
-
-	// just the latest record
-	data = results[0]
-	return data, nil
+	stmt := "SELECT " + ieqScoreColumns + " FROM ieqscores WHERE device_id = $1 ORDER BY rowid DESC LIMIT 1"
+	row := db.QueryRowContext(ctx, stmt, deviceID)
+	err = scanMetricsRow(row, deviceID, "ieqscores",
+		&data.DeviceID, &data.CreatedOn, &data.Scheme, &data.Thermal, &data.IAQ,
+		&data.Lighting, &data.Noise, &data.Overall, &data.ThermalWeighting,
+		&data.IAQWeighting, &data.LightingWeighting, &data.NoiseWeighting)
+	return data, err
 }
 
-// ReadMetrics returns just the metrics record
-func ReadMetrics(deviceID string, count int) (results []mdl.Metrics, err error) {
-	results = []mdl.Metrics{}
-	db := connect()
-	defer db.Close()
-
-	stmt := "SELECT * FROM metrics WHERE device_id = $1 ORDER BY rowid DESC LIMIT " + strconv.Itoa(count)
-
-	rows, err := db.Query(stmt, deviceID)
+// ReadMetrics returns up to count of the most recent metrics records
+func ReadMetrics(ctx context.Context, deviceID string, count int) ([]mdl.Metrics, error) {
+	results := []mdl.Metrics{}
+	db, err := getDB()
 	if err != nil {
 		return results, err
 	}
+
+	stmt := "SELECT " + metricsColumns + " FROM metrics WHERE device_id = $1 ORDER BY rowid DESC LIMIT $2"
+	rows, err := db.QueryContext(ctx, stmt, deviceID, count)
+	if err != nil {
+		return results, fmt.Errorf("query metrics: %w", err)
+	}
 	defer rows.Close()
 
-	var rowid int
 	for rows.Next() {
 		item := mdl.Metrics{}
-		err2 := rows.Scan(&rowid, &item.DeviceID, &item.CreatedOn, &item.Temperature, &item.Humidity, &item.CO2, &item.VOC, &item.PM25, &item.Lighting, &item.Noise)
-		if err2 != nil {
-			return results, err
+		err = rows.Scan(&item.DeviceID, &item.CreatedOn, &item.Temperature, &item.Humidity,
+			&item.CO2, &item.VOC, &item.PM25, &item.Lighting, &item.Noise)
+		if err != nil {
+			return results, fmt.Errorf("scan metrics: %w", err)
 		}
 		results = append(results, item)
 	}
+	if err = rows.Err(); err != nil {
+		return results, fmt.Errorf("iterate metrics: %w", err)
+	}
 
 	if len(results) == 0 {
-		return results, errors.New("No record found")
+		return results, fmt.Errorf("metrics for device %s: %w", deviceID, ErrNoRecord)
 	}
 
 	return results, nil

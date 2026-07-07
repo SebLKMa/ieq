@@ -1,163 +1,89 @@
 package uhoo
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	mdl "github.com/seblkma/ieq/models"
 )
 
-// GetState implements device interface Device.GetState()
-// Uses sensor cloud API to get device information.
-func (sensor *SensorInfo) GetState(id string) (result string, err error) {
-	apiurl := "https://api.uhooinc.com/v1/getdevicelist"
-	token := sensor.Token
-	org := sensor.Org
-	apidata := "username=" + org + "&" + "password=" + token
-
-	//reqBody := strings.NewReader(`username=sebmaspd@gmail.com&password=cbda313934cddaa638e13aca7c4dbf9a5a82260d2b899dda088c702c69a14eac`)
-	reqBody := strings.NewReader(apidata)
-	req, err := http.NewRequest("POST", apiurl, reqBody)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	resBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(resBody), nil
+// deviceEntry matches one device in the uHoo device list JSON
+type deviceEntry struct {
+	DeviceName   string `json:"deviceName"`
+	SerialNumber string `json:"serialNumber"`
+	Company      string `json:"company"`
+	MacAddress   string `json:"macAddress"`
 }
 
-// GetRawMetrics implements device interface Device.GetLatestMetrics()
+// latestData matches the uHoo latest data JSON; all values arrive as strings
+type latestData struct {
+	Temperature string `json:"Temperature"`
+	Humidity    string `json:"Relative Humidity"`
+	CO2         string `json:"CO2"`
+	TVOC        string `json:"TVOC"`
+	PM25        string `json:"PM2.5"`
+}
+
+// GetState implements device interface Device.GetState()
+// Uses sensor cloud API to get device information.
+func (sensor *SensorInfo) GetState(ctx context.Context, id string) (result string, err error) {
+	return sensor.postForm(ctx, uhooBaseURL+"/getdevicelist", nil)
+}
+
+// GetRawMetrics implements device interface Device.GetRawMetrics()
 // Uses sensor cloud API to get metrics values.
-func (sensor *SensorInfo) GetRawMetrics(id string) (result string, err error) {
-	apiurl := "https://api.uhooinc.com/v1/getlatestdata"
-	token := sensor.Token
-	org := sensor.Org
-	apidata := "username=" + org + "&" + "password=" + token + "&" + "serialNumber=" + id
+func (sensor *SensorInfo) GetRawMetrics(ctx context.Context, id string) (result string, err error) {
+	return sensor.postForm(ctx, uhooBaseURL+"/getlatestdata", url.Values{"serialNumber": {id}})
+}
 
-	//reqBody = strings.NewReader(`username=sebmaspd@gmail.com&password=cbda313934cddaa638e13aca7c4dbf9a5a82260d2b899dda088c702c69a14eac&serialNumber=52ff6b066571525520131987`)
-	reqBody := strings.NewReader(apidata)
-	req, err := http.NewRequest("POST", apiurl, reqBody)
-	if err != nil {
-		return "", err
+// parseMetric parses one string metric value into dest and clears the Empty flag.
+func parseMetric(name, value string, dest *float64, empty *bool) error {
+	if value == "" {
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
+	v, err := strconv.ParseFloat(value, 64)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("parse %s %q: %w", name, value, err)
 	}
-	defer resp.Body.Close()
-
-	resBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	return string(resBody), nil
+	*dest = v
+	*empty = false
+	return nil
 }
 
 // GetLatestMetrics gets the latest raw metrics from device
-func (sensor *SensorInfo) GetLatestMetrics(deviceID string) (result mdl.Metrics, err error) {
+func (sensor *SensorInfo) GetLatestMetrics(ctx context.Context, deviceID string) (result mdl.Metrics, err error) {
 	result = mdl.Metrics{Empty: true, CreatedOn: time.Now()}
 
-	jsonData, err := sensor.GetRawMetrics(deviceID)
-	//fmt.Printf("%v\n", jsonData)
+	jsonData, err := sensor.GetRawMetrics(ctx, deviceID)
 	if err != nil {
 		log.Println(err)
 		return result, err
 	}
 
-	// Unmarshal using a generic interface
-	var g map[string]interface{}
-
-	bytes := []byte(jsonData)
-	err = json.Unmarshal(bytes, &g)
-	if err != nil {
+	var data latestData
+	if err = json.Unmarshal([]byte(jsonData), &data); err != nil {
 		log.Println(err)
 		return result, err
 	}
 
-	// iterate to get the data we want
-	for k, v := range g {
-		switch k {
-		case "Temperature":
-			// Make sure is a string
-			switch itemValue := v.(type) {
-			case string:
-				result.Empty = false
-				result.Temperature, err = strconv.ParseFloat(itemValue, 64)
-				if err != nil {
-					return result, err
-				}
-			default:
-				return result, errors.New("Incorrect type for Temperature")
-			}
-		case "Relative Humidity":
-			// Make sure is a string
-			switch itemValue := v.(type) {
-			case string:
-				result.Empty = false
-				result.Humidity, err = strconv.ParseFloat(itemValue, 64)
-				if err != nil {
-					return result, err
-				}
-			default:
-				return result, errors.New("Incorrect type for Humidity")
-			}
-		case "CO2":
-			// Make sure is a string
-			switch itemValue := v.(type) {
-			case string:
-				result.Empty = false
-				result.CO2, err = strconv.ParseFloat(itemValue, 64)
-				if err != nil {
-					return result, err
-				}
-			default:
-				return result, errors.New("Incorrect type for CO2")
-			}
-		case "TVOC":
-			// Make sure is a string
-			switch itemValue := v.(type) {
-			case string:
-				result.Empty = false
-				result.VOC, err = strconv.ParseFloat(itemValue, 64)
-				if err != nil {
-					return result, err
-				}
-			default:
-				return result, errors.New("Incorrect type for VOC")
-			}
-		case "PM2.5":
-			// Make sure is a string
-			switch itemValue := v.(type) {
-			case string:
-				result.Empty = false
-				result.PM25, err = strconv.ParseFloat(itemValue, 64)
-				if err != nil {
-					return result, err
-				}
-			default:
-				return result, errors.New("Incorrect type for PM25")
-			}
+	for _, m := range []struct {
+		name  string
+		value string
+		dest  *float64
+	}{
+		{"Temperature", data.Temperature, &result.Temperature},
+		{"Humidity", data.Humidity, &result.Humidity},
+		{"CO2", data.CO2, &result.CO2},
+		{"VOC", data.TVOC, &result.VOC},
+		{"PM25", data.PM25, &result.PM25},
+	} {
+		if err = parseMetric(m.name, m.value, m.dest, &result.Empty); err != nil {
+			return result, err
 		}
 	}
 
@@ -165,11 +91,11 @@ func (sensor *SensorInfo) GetLatestMetrics(deviceID string) (result mdl.Metrics,
 }
 
 // GetDeviceInfo returns the current information of the device
-func (sensor *SensorInfo) GetDeviceInfo(id string) (result mdl.DeviceInfo, err error) {
+func (sensor *SensorInfo) GetDeviceInfo(ctx context.Context, id string) (result mdl.DeviceInfo, err error) {
 	result.VendorDeviceID = id
 	result.CreatedOn = time.Now()
-	jsonData, err := sensor.GetState(id)
-	//fmt.Printf("%v\n", jsonData)
+
+	jsonData, err := sensor.GetState(ctx, id)
 	if err != nil {
 		result.Status = 0
 		result.StatusDescription = err.Error()
@@ -177,70 +103,23 @@ func (sensor *SensorInfo) GetDeviceInfo(id string) (result mdl.DeviceInfo, err e
 		return result, err
 	}
 
-	// Unmarshal using a generic interface
-	var g interface{}
-
-	bytes := []byte(jsonData)
-	err = json.Unmarshal(bytes, &g)
-	if err != nil {
+	var devices []deviceEntry
+	if err = json.Unmarshal([]byte(jsonData), &devices); err != nil {
 		result.Status = 0
 		result.StatusDescription = err.Error()
 		log.Println(err)
 		return result, err
-	}
-
-	// s is slice
-	s, ok := g.([]interface{})
-	if !ok {
-		return result, errors.New("JSON type error")
 	}
 
 	// vendor API has no way to tell if device is online or offline
 	result.Status = 1
 
-	// iterate to get the data we want
-	for k, v := range s {
-		switch vt := v.(type) {
-		case map[string]interface{}:
-			fmt.Println(k, "is a map:")
-			for kk, vv := range vt {
-				//fmt.Println(kk, vv)
-				switch kk {
-				case "deviceName":
-					switch itemValue := vv.(type) {
-					case string:
-						result.DeviceID = itemValue
-						result.DisplayName = itemValue
-					default:
-						fmt.Println("Incorrect type for DeviceID: ", k)
-					}
-				case "serialNumber":
-					switch itemValue := vv.(type) {
-					case string:
-						result.SerialNumber = itemValue
-					default:
-						fmt.Println("Incorrect type for SerialNumber: ", k)
-					}
-				case "company":
-					switch itemValue := vv.(type) {
-					case string:
-						result.Org = itemValue
-					default:
-						fmt.Println("Incorrect type for Org: ", k)
-					}
-				case "macAddress":
-					switch itemValue := vv.(type) {
-					case string:
-						result.MacAddress = itemValue
-					default:
-						fmt.Println("Incorrect type for MacAddress: ", k)
-					}
-				}
-
-			}
-		default:
-			return result, errors.New("Unexpected JSON collection structure")
-		}
+	for _, d := range devices {
+		result.DeviceID = d.DeviceName
+		result.DisplayName = d.DeviceName
+		result.SerialNumber = d.SerialNumber
+		result.Org = d.Company
+		result.MacAddress = d.MacAddress
 	}
 
 	return result, nil

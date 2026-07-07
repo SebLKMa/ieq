@@ -11,30 +11,8 @@ type MinIsGoodFormula struct {
 
 // Setup implements interface Scorer.Setup().
 // Setup will populate the scores ranges used by Score().
-func (f *MinIsGoodFormula) Setup(n string, min float64, max float64) {
-	f.mingood.formula = &Formula{}
-	f.mingood.name = n
-	f.mingood.formula.min = min
-	f.mingood.formula.max = max
-	f.mingood.formula.avg = (f.mingood.formula.min + f.mingood.formula.max) / 2
-	f.mingood.formula.rrange = (f.mingood.formula.max - f.mingood.formula.avg) / f.mingood.formula.avg * 100
-
-	// generate the relative ranges as a binary skiptree
-	from := 0.0
-	to := f.mingood.formula.rrange
-	high := 100
-	low := -10
-	chunks := 11
-	diff := (high - low) / chunks
-	score := high
-	for i := 1; i < chunks; i++ {
-		//fmt.Printf("From:%g To:%g Score:%g\n", from, to, float64(score))
-		f.mingood.formula.ranges.Insert(from, to, float64(score))
-		score = score - diff
-		from = to
-		to += f.mingood.formula.rrange
-	}
-	f.mingood.formula.ranges.Insert(from, to, float64(score))
+func (f *MinIsGoodFormula) Setup(n string, minVal float64, maxVal float64) {
+	f.mingood.Setup(n, minVal, maxVal)
 }
 
 // Score implements interface Scorer.Score()

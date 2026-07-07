@@ -3,27 +3,51 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"sync"
+
+	_ "github.com/lib/pq" // the db driver supports database/sql
 )
 
-// TODO: hardcoded for now, to refactor to config
+// Connection settings come from the environment, falling back to the
+// historical local development defaults.
 const (
-	host     = "localhost"
-	port     = 5432
-	user     = "iequser"
-	password = "iequser"
-	dbname   = "ieqdb"
+	defaultHost     = "localhost"
+	defaultPort     = "5432"
+	defaultUser     = "iequser"
+	defaultPassword = "iequser"
+	defaultDbname   = "ieqdb"
 )
 
-// connect opens and return the db object. Caller must close db when done with it.
-func connect() (db *sql.DB) {
+var (
+	pool     *sql.DB
+	poolErr  error
+	poolOnce sync.Once
+)
 
-	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
-		"password=%s dbname=%s sslmode=disable",
-		host, port, user, password, dbname)
-
-	db, err := sql.Open("postgres", psqlInfo)
-	if err != nil {
-		panic(err)
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-	return db
+	return fallback
+}
+
+// getDB returns the shared connection pool, creating it on first use.
+// sql.DB is a long-lived pool: it is opened once and shared by all callers,
+// never closed per query.
+func getDB() (*sql.DB, error) {
+	poolOnce.Do(func() {
+		psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+			envOr("IEQ_DB_HOST", defaultHost),
+			envOr("IEQ_DB_PORT", defaultPort),
+			envOr("IEQ_DB_USER", defaultUser),
+			envOr("IEQ_DB_PASSWORD", defaultPassword),
+			envOr("IEQ_DB_NAME", defaultDbname))
+
+		pool, poolErr = sql.Open("postgres", psqlInfo)
+		if poolErr != nil {
+			poolErr = fmt.Errorf("open database: %w", poolErr)
+		}
+	})
+	return pool, poolErr
 }

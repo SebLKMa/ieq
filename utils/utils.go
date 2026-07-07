@@ -1,33 +1,20 @@
 package utils
 
 import (
-	"flag"
+	"errors"
+	"io/fs"
 	"os"
 )
 
-func IsFlagPassed(name string) bool {
-	found := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			found = true
-		}
-	})
-	return found
-}
-
-func GetFlagName() (bool, string) {
-	found := false
-	name := ""
-	flag.Visit(func(f *flag.Flag) {
-		name = f.Name
-		found = true
-	})
-	return found, name
-}
-
+// FileExists reports whether filename exists and is a regular file (not a directory).
 func FileExists(filename string) bool {
 	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		// Stat failed for another reason (e.g. permission denied);
+		// the file cannot be used either way.
 		return false
 	}
 	return !info.IsDir()
